@@ -55,14 +55,27 @@
     .modal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; }
     .category-list { list-style: none; margin-top: 15px; max-height: 200px; overflow-y: auto; }
     .category-item { display: flex; justify-content: space-between; align-items: center; padding: 8px 10px; border-bottom: 1px solid #f1f5f9; }
+
+    /* Simple auth UI */
+    .auth-actions { display: flex; gap: 8px; align-items: center; }
+    .auth-info { font-size: 14px; color: #475569; margin-right: 10px; }
+
+    .small-modal { position: fixed; right: 20px; top: 70px; background: white; padding: 15px; border-radius: 8px; box-shadow: 0 8px 20px rgba(0,0,0,0.12); display: none; z-index: 200; }
+    .small-modal input { margin-bottom: 8px; }
   </style>
 </head>
 <body>
 
 <div class="container">
   <header>
-    <h1>Daily Expense Tracker</h1>
-    <button class="btn btn-secondary" id="openSettingsBtn">⚙️ Category Settings</button>
+    <h1>Expense-Tracker</h1>
+    <div class="auth-actions">
+      <div id="authInfo" class="auth-info">Guest</div>
+      <button class="btn btn-secondary" id="openSettingsBtn">⚙️ Category Settings</button>
+      <button class="btn btn-primary" id="signInBtn">Sign In</button>
+      <button class="btn btn-secondary" id="signUpBtn">Sign Up</button>
+      <button class="btn btn-danger" id="signOutBtn" style="display:none;">Sign Out</button>
+    </div>
   </header>
 
   <!-- 1. FRONT & TOP: Add New Expense Form -->
@@ -154,11 +167,102 @@
   </div>
 </div>
 
-<script>
-  const DEFAULT_CATEGORIES = ["Food & Dining", "Transportation", "Utilities", "Shopping", "Entertainment", "Health", "Other"];
+<!-- Small Sign In / Sign Up Modals -->
+<div class="small-modal" id="signInModal">
+  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;"><strong>Sign In</strong><button onclick="closeSignIn()" style="border:none;background:none;cursor:pointer">&times;</button></div>
+  <input id="signInEmail" type="email" placeholder="Email" />
+  <input id="signInPassword" type="password" placeholder="Password" />
+  <button class="btn btn-primary" id="signInSubmit">Sign In</button>
+</div>
+
+<div class="small-modal" id="signUpModal">
+  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;"><strong>Sign Up</strong><button onclick="closeSignUp()" style="border:none;background:none;cursor:pointer">&times;</button></div>
+  <input id="signUpEmail" type="email" placeholder="Email" />
+  <input id="signUpPassword" type="password" placeholder="Password (6+ chars)" />
+  <button class="btn btn-primary" id="signUpSubmit">Create Account</button>
+</div>
+
+<!-- Firebase SDKs will be loaded as ES modules in the script below -->
+
+<script type="module">
+  // =========== FIREBASE CONFIGURE HERE ============
+  // IMPORTANT: DO NOT COMMIT real API keys to public repos. Replace the placeholders with your
+  // Firebase web app config from Project Settings. Alternatively, keep the placeholders here
+  // and paste the real config into the file locally before deploying.
+  const firebaseConfig = {
+    apiKey: "YOUR_API_KEY",
+    authDomain: "YOUR_AUTH_DOMAIN",
+    projectId: "YOUR_PROJECT_ID",
+    // storageBucket, messagingSenderId, appId -- optional for this demo
+  };
+
+  // If the apiKey still starts with YOUR_ then we will NOT initialize Firebase and the app
+  // will continue to work with localStorage only.
+  const firebaseEnabled = firebaseConfig.apiKey && !firebaseConfig.apiKey.startsWith('YOUR_');
+
+  if (firebaseEnabled) {
+    // import from CDN (modular SDK)
+    import('https://www.gstatic.com/firebasejs/9.24.0/firebase-app.js').then(({ initializeApp }) => {
+      import('https://www.gstatic.com/firebasejs/9.24.0/firebase-auth.js').then(({ getAuth, onAuthStateChanged, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut }) => {
+        import('https://www.gstatic.com/firebasejs/9.24.0/firebase-firestore.js').then(({ getFirestore, collection, addDoc, setDoc, doc, getDocs, query, orderBy, deleteDoc, onSnapshot, serverTimestamp }) => {
+          const app = initializeApp(firebaseConfig);
+          const auth = getAuth(app);
+          const db = getFirestore(app);
+
+          // Expose firebase handles to outer scope functions
+          window._firebase = { app, auth, db, functions: { addDoc, collection, doc, deleteDoc, query, orderBy, onSnapshot, getDocs, serverTimestamp } };
+
+          // Listen for auth state changes
+          onAuthStateChanged(auth, async (user) => {
+            if (user) {
+              currentUserUid = user.uid;
+              authInfo.textContent = user.email;
+              signInBtn.style.display = 'none';
+              signUpBtn.style.display = 'none';
+              signOutBtn.style.display = 'inline-block';
+
+              // Load remote expenses and subscribe to live updates
+              subscribeToRemoteExpenses(user.uid);
+
+              // Offer to migrate local data if present
+              const local = JSON.parse(localStorage.getItem('bdt_expenses') || '[]');
+              if (local.length > 0) {
+                const upload = confirm('Local transactions found. Upload local data to your cloud account? (Choose Cancel to keep local data)');
+                if (upload) {
+                  await uploadLocalToCloud(user.uid, local);
+                } else {
+                  // do nothing, user chose to keep local
+                }
+              }
+
+            } else {
+              // Signed out
+              currentUserUid = null;
+              authInfo.textContent = 'Guest';
+              signInBtn.style.display = 'inline-block';
+              signUpBtn.style.display = 'inline-block';
+              signOutBtn.style.display = 'none';
+
+              // Use localStorage data
+              expenses = JSON.parse(localStorage.getItem('bdt_expenses')) || [];
+              render();
+            }
+          });
+
+        });
+      });
+    });
+  } else {
+    console.warn('Firebase not initialized - running in localStorage-only mode. Replace firebaseConfig with your values to enable cloud sync.');
+  }
+
+  // =========== END FIREBASE SETUP ============
+
+  const DEFAULT_CATEGORIES = ["Food & Dining", "Transportation", "Utilities", "Shopping", "Entertainment", "Health", "Other"]; 
 
   let categories = JSON.parse(localStorage.getItem('bdt_categories')) || DEFAULT_CATEGORIES;
   let expenses = JSON.parse(localStorage.getItem('bdt_expenses')) || [];
+  let currentUserUid = null; // set when signed in
 
   // DOM Elements
   const expDate = document.getElementById('expDate');
@@ -179,12 +283,22 @@
   const newCategoryInput = document.getElementById('newCategoryInput');
   const categoryList = document.getElementById('categoryList');
 
+  const authInfo = document.getElementById('authInfo');
+  const signInBtn = document.getElementById('signInBtn');
+  const signUpBtn = document.getElementById('signUpBtn');
+  const signOutBtn = document.getElementById('signOutBtn');
+
+  const signInModal = document.getElementById('signInModal');
+  const signUpModal = document.getElementById('signUpModal');
+  const signInSubmit = document.getElementById('signInSubmit');
+  const signUpSubmit = document.getElementById('signUpSubmit');
+
   // Set default date to today
   expDate.valueAsDate = new Date();
 
   // Format currency helper
   function formatBDT(amount) {
-    return '৳' + amount.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    return '৳' + Number(amount).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   }
 
   // Populate Category Select Dropdowns
@@ -218,7 +332,7 @@
   });
 
   // Delete Category
-  function deleteCategory(index) {
+  window.deleteCategory = function(index) {
     if (categories.length <= 1) {
       alert('You must have at least one category.');
       return;
@@ -230,26 +344,67 @@
   }
 
   // Add Expense
-  expenseForm.addEventListener('submit', (e) => {
+  expenseForm.addEventListener('submit', async (e) => {
     e.preventDefault();
     const newExpense = {
-      id: Date.now(),
+      id: 'local-' + Date.now(),
       date: expDate.value,
       description: expDesc.value.trim(),
       category: expCategory.value,
-      amount: parseFloat(expAmount.value)
+      amount: parseFloat(expAmount.value),
+      createdAt: Date.now(),
+      remoteId: null
     };
 
     expenses.unshift(newExpense);
     saveAndRender();
+
+    // If signed in and firebase available, push to Firestore and update local record with remoteId
+    if (currentUserUid && window._firebase) {
+      try {
+        const { addDoc, collection } = window._firebase.functions;
+        const docRef = await addDoc(collection(window._firebase.db, 'users', currentUserUid, 'expenses'), {
+          date: newExpense.date,
+          description: newExpense.description,
+          category: newExpense.category,
+          amount: newExpense.amount,
+          createdAt: window._firebase.functions.serverTimestamp ? window._firebase.functions.serverTimestamp() : Date.now()
+        });
+        // store remoteId in local copy
+        const idx = expenses.findIndex(it => it.id === newExpense.id);
+        if (idx !== -1) {
+          expenses[idx].remoteId = docRef.id;
+          localStorage.setItem('bdt_expenses', JSON.stringify(expenses));
+          render();
+        }
+      } catch (err) {
+        console.error('Failed to push expense to cloud', err);
+      }
+    }
+
     expenseForm.reset();
     expDate.valueAsDate = new Date();
   });
 
   // Delete Expense
-  function deleteExpense(id) {
-    expenses = expenses.filter(item => item.id !== id);
+  window.deleteExpense = async function(id) {
+    // find item
+    const item = expenses.find(it => it.id === id || it.remoteId === id);
+    if (!item) return;
+
+    // remove locally
+    expenses = expenses.filter(it => !(it.id === id || it.remoteId === id));
     saveAndRender();
+
+    // delete from Firestore if remoteId exists and user signed in
+    if (currentUserUid && item.remoteId && window._firebase) {
+      try {
+        const { deleteDoc, doc } = window._firebase.functions;
+        await deleteDoc(doc(window._firebase.db, 'users', currentUserUid, 'expenses', item.remoteId));
+      } catch (err) {
+        console.error('Failed to delete remote expense', err);
+      }
+    }
   }
 
   // Save to LocalStorage & Render Dashboard
@@ -271,7 +426,7 @@
     });
 
     // Calculate overall Statistics from all filtered entries
-    const total = filtered.reduce((sum, item) => sum + item.amount, 0);
+    const total = filtered.reduce((sum, item) => sum + (Number(item.amount) || 0), 0);
     const count = filtered.length;
     const avg = count > 0 ? total / count : 0;
 
@@ -279,7 +434,7 @@
     document.getElementById('totalEntries').textContent = count;
     document.getElementById('avgExpense').textContent = formatBDT(avg);
 
-    // KEY CHANGE: Take only the top 10 most recent entries
+    // Take only the top 10 most recent entries
     const recentTen = filtered.slice(0, 10);
 
     showingCount.textContent = `Showing ${recentTen.length} of ${count} entries`;
@@ -296,7 +451,7 @@
         <td>${item.description}</td>
         <td><span class="badge">${item.category}</span></td>
         <td><strong>${formatBDT(item.amount)}</strong></td>
-        <td><button class="btn btn-danger" onclick="deleteExpense(${item.id})">Delete</button></td>
+        <td><button class="btn btn-danger" onclick="deleteExpense('${item.id || item.remoteId}')">Delete</button></td>
       </tr>
     `).join('');
   }
@@ -328,6 +483,100 @@
     a.download = `expenses_bdt_${new Date().toISOString().slice(0,10)}.csv`;
     a.click();
   });
+
+  // ========== Firebase helpers (used when firebase initialized) ==========
+  async function subscribeToRemoteExpenses(uid) {
+    if (!window._firebase) return;
+    const { collection, query, orderBy, onSnapshot } = window._firebase.functions;
+    const q = query(collection(window._firebase.db, 'users', uid, 'expenses'), orderBy('createdAt', 'desc'));
+    // live subscription
+    onSnapshot(q, (snapshot) => {
+      const remote = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+      // normalize: ensure amount is number
+      remote.forEach(r => { r.amount = Number(r.amount); r.remoteId = r.id; });
+      expenses = remote;
+      // persist a copy locally as cache
+      localStorage.setItem('bdt_expenses', JSON.stringify(expenses));
+      render();
+    }, (err) => {
+      console.error('Remote snapshot error', err);
+    });
+  }
+
+  async function uploadLocalToCloud(uid, localArray) {
+    if (!window._firebase) return;
+    const { collection, addDoc } = window._firebase.functions;
+    try {
+      for (const item of localArray) {
+        await addDoc(collection(window._firebase.db, 'users', uid, 'expenses'), {
+          date: item.date,
+          description: item.description,
+          category: item.category,
+          amount: item.amount,
+          createdAt: item.createdAt || Date.now()
+        });
+      }
+      // after upload, remote subscription will replace local expenses
+      alert('Uploaded local transactions to cloud.');
+    } catch (err) {
+      console.error('Failed to upload local data', err);
+      alert('Failed to upload local data: ' + err.message);
+    }
+  }
+
+  // ========== Basic Auth UI handlers (no-credentials stored) ============
+  function openSignIn() { signInModal.style.display = 'block'; }
+  function closeSignIn() { signInModal.style.display = 'none'; }
+  function openSignUp() { signUpModal.style.display = 'block'; }
+  function closeSignUp() { signUpModal.style.display = 'none'; }
+
+  signInBtn.addEventListener('click', () => { openSignIn(); });
+  signUpBtn.addEventListener('click', () => { openSignUp(); });
+  signOutBtn.addEventListener('click', async () => {
+    if (window._firebase) {
+      try { await window._firebase.app ? window._firebase.app : null; } catch(e){}
+      try { await (await import('https://www.gstatic.com/firebasejs/9.24.0/firebase-auth.js')).signOut((await import('https://www.gstatic.com/firebasejs/9.24.0/firebase-app.js')).getApp()); } catch(e){}
+    }
+    // fallback: if auth isn't initialized just clear currentUid and revert to local
+    currentUserUid = null;
+    authInfo.textContent = 'Guest';
+    signInBtn.style.display = 'inline-block';
+    signUpBtn.style.display = 'inline-block';
+    signOutBtn.style.display = 'none';
+    expenses = JSON.parse(localStorage.getItem('bdt_expenses')) || [];
+    render();
+  });
+
+  signInSubmit.addEventListener('click', async () => {
+    if (!firebaseEnabled) return alert('Firebase is not configured. Paste your firebaseConfig to enable cloud features.');
+    const email = document.getElementById('signInEmail').value;
+    const password = document.getElementById('signInPassword').value;
+    try {
+      const { getAuth, signInWithEmailAndPassword } = await import('https://www.gstatic.com/firebasejs/9.24.0/firebase-auth.js');
+      const auth = getAuth();
+      await signInWithEmailAndPassword(auth, email, password);
+      closeSignIn();
+    } catch (err) {
+      alert('Sign in failed: ' + err.message);
+    }
+  });
+
+  signUpSubmit.addEventListener('click', async () => {
+    if (!firebaseEnabled) return alert('Firebase is not configured. Paste your firebaseConfig to enable cloud features.');
+    const email = document.getElementById('signUpEmail').value;
+    const password = document.getElementById('signUpPassword').value;
+    try {
+      const { getAuth, createUserWithEmailAndPassword } = await import('https://www.gstatic.com/firebasejs/9.24.0/firebase-auth.js');
+      const auth = getAuth();
+      await createUserWithEmailAndPassword(auth, email, password);
+      closeSignUp();
+    } catch (err) {
+      alert('Sign up failed: ' + err.message);
+    }
+  });
+
+  function closeSignIn() { signInModal.style.display = 'none'; }
+  function closeSignUp() { signUpModal.style.display = 'none'; }
 
   // Initial Initialization
   updateCategoryDropdowns();
